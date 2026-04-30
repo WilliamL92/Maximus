@@ -3,7 +3,11 @@
   "displayName": "Maximus",
   "description": "Ouvre, parcourt, édite et recherche dans des fichiers de plusieurs centaines de Go sans saturer la RAM ni le disque.",
   "version": "0.1.0",
-  "publisher": "local",
+  "publisher": "maximus1",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/WilliamL92/Maximus.git"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
