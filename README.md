@@ -116,17 +116,37 @@ platform-specific syscall), and the worker pool is sized via
 - The edit overlay stays in RAM until save — avoid editing millions of lines without saving.
 - No "tail -f" mode yet (live tracking of an appended file).
 
+## Install
+
+- **From the VS Code Marketplace**: search `maximus1.maximus` (or `Maximus`) in the Extensions panel, or [open in Marketplace](https://marketplace.visualstudio.com/items?itemName=maximus1.maximus).
+- **From a GitHub Release**: download `maximus-<version>.vsix` from [Releases](https://github.com/WilliamL92/Maximus/releases) and run `Extensions: Install from VSIX…` in VS Code.
+
 ## Usage
 
-1. `npm install` — installs + bundles highlight.js
-2. `F5` in VS Code to launch an "Extension Development Host" instance, **or** package + install:
-   ```bash
-   npm run compile
-   npx --yes @vscode/vsce package --allow-missing-repository
-   code --install-extension maximus-<version>.vsix --force
-   ```
-3. Right-click on a file → **Open With…** → **Maximus**, or run the command `Maximus: Open current file`
-4. `Ctrl+F` to search, `Ctrl+H` to replace, `Ctrl+G` to **go to line**, `Ctrl+S` to save, double-click on a line to edit
+1. Right-click on a file → **Open With…** → **Maximus**, or run the command `Maximus: Open current file`
+2. `Ctrl+F` to search, `Ctrl+H` to replace, `Ctrl+G` to **go to line**, `Ctrl+S` to save, double-click on a line to edit
+
+### Local development
+
+```bash
+npm install                 # installs + bundles highlight.js
+# F5 in VS Code → "Extension Development Host"
+# or build + install a local .vsix:
+npm run compile
+npx --yes @vscode/vsce package
+code --install-extension maximus-<version>.vsix --force
+```
+
+## Release
+
+Pushes to `master` trigger [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) which:
+
+1. reads `version` from `package.json`
+2. skips if the tag `v<version>` already exists (idempotent — bump the version to release)
+3. packages the `.vsix`, publishes it to the VS Code Marketplace (uses the `VSCE_PAT` repo secret)
+4. creates the git tag `v<version>` and a GitHub Release with the `.vsix` attached
+
+To cut a release: bump `version` in `package.json`, commit, push to `master`.
 
 ### Keyboard & mouse navigation
 
@@ -159,6 +179,7 @@ visible line — O(visible), no extension round-trip.
 | `maximus.bufferLines` | 20 | Lines pre-loaded off-screen |
 | `maximus.searchWorkers` | 0 (= auto via `os.availableParallelism()`) | Number of workers for search/index |
 | `maximus.autoOpenThresholdMB` | 50 | (placeholder for automatic suggestion) |
+| `maximus.maxHitsInWebview` | 100000 | Max search hits sent to the webview for navigation/highlighting |
 
 ## Security
 

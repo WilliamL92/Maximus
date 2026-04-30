@@ -50,14 +50,23 @@ the product.** Every change must respect:
 
 ## Workflow
 
+Local dev / smoke test:
+
 ```bash
 npm run compile             # tsc → out/
 # bench in /tmp/bench-*.js if you touched a hot path
-# bump version in package.json
-npx --yes @vscode/vsce package --allow-missing-repository
+npx --yes @vscode/vsce package
 code --install-extension maximus-<version>.vsix --force
 # reload VS Code window
 ```
+
+Release: bump `version` in `package.json` → commit → push to `master`.
+[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) packages the
+`.vsix`, publishes it to the VS Code Marketplace (`maximus1.maximus`), tags
+`v<version>` and creates a GitHub Release. The job is idempotent: if the
+tag already exists, the run skips the publish step. Marketplace auth uses
+the `VSCE_PAT` GitHub repo secret (Azure DevOps PAT, scope `Marketplace >
+Manage`, all accessible orgs).
 
 ## Hard rules
 

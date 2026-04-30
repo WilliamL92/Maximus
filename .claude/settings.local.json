@@ -2,7 +2,14 @@
   "permissions": {
     "allow": [
       "Bash(gh auth *)",
-      "PowerShell(gh *)"
+      "PowerShell(gh *)",
+      "Bash(git fetch *)",
+      "Bash(npm audit *)",
+      "Bash(npm outdated *)",
+      "Bash(npm view *)",
+      "Read(//e/Projects/Extensions/Maximus/**)",
+      "Bash(npm install *)",
+      "Bash(npm run *)"
     ]
   }
 }

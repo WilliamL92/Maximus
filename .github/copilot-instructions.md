@@ -137,13 +137,21 @@ in a few seconds max on a standard developer machine. No synchronous
    failure.
 5. **Bump the version** in [package.json](package.json) if you rebuild
    a `.vsix` for installation (otherwise VS Code may cache the old
-   webview).
-6. **Package**:
+   webview). Bumping the version is also what triggers a Marketplace
+   release on the next push to `master`.
+6. **Package locally** (for ad-hoc install / smoke test):
    ```bash
    npm run compile
-   npx --yes @vscode/vsce package --allow-missing-repository
+   npx --yes @vscode/vsce package
    code --install-extension maximus-<version>.vsix --force
    ```
+7. **Release** (Marketplace): push to `master`. The
+   [.github/workflows/deploy.yml](.github/workflows/deploy.yml)
+   workflow packages, runs `vsce publish` against
+   `maximus1.maximus` (PAT in the `VSCE_PAT` repo secret), creates the
+   git tag `v<version>` and a GitHub Release. The job skips itself if
+   the tag already exists, so pushes that don't bump the version are
+   no-ops.
 
 ## 5. Anti-patterns to systematically reject
 
