@@ -1,0 +1,24 @@
+# Sources non packagées (on n'embarque que out/)
+src/**
+**/*.ts
+**/*.map
+tsconfig.json
+
+# Outils de dev
+.vscode/**
+.github/**
+.git/**
+.gitignore
+.eslintrc*
+.prettierrc*
+
+# Dépendances : aucune dépendance runtime, donc on exclut tout
+node_modules/**
+
+# Données de test (peuvent peser plusieurs Go)
+samples/**
+scripts/**
+
+# Documentation interne
+docs/**
+*.log

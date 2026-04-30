@@ -1,0 +1,79 @@
+{
+  "name": "maximus",
+  "displayName": "Maximus",
+  "description": "Ouvre, parcourt, édite et recherche dans des fichiers de plusieurs centaines de Go sans saturer la RAM ni le disque.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "maximus.editor",
+        "displayName": "Maximus",
+        "selector": [
+          { "filenamePattern": "*" }
+        ],
+        "priority": "option"
+      }
+    ],
+    "commands": [
+      {
+        "command": "maximus.openWith",
+        "title": "Maximus: Ouvrir le fichier courant"
+      }
+    ],
+    "configuration": {
+      "title": "Maximus",
+      "properties": {
+        "maximus.indexEveryNLines": {
+          "type": "number",
+          "default": 1000,
+          "description": "Nombre de lignes entre chaque entrée d'index creux."
+        },
+        "maximus.bufferLines": {
+          "type": "number",
+          "default": 20,
+          "description": "Lignes pré-chargées hors-écran (haut/bas)."
+        },
+        "maximus.autoOpenThresholdMB": {
+          "type": "number",
+          "default": 50,
+          "description": "Au-dessus de cette taille (Mo), proposer Maximus."
+        },
+        "maximus.maxHitsInWebview": {
+          "type": "number",
+          "default": 100000,
+          "description": "Nombre maximal de résultats de recherche envoyés au webview pour navigation/surlignage. Au-delà, le compteur total reste exact mais seuls les premiers hits sont navigables (évite la saturation mémoire de la webview sur fichiers de plusieurs Go)."
+        },
+        "maximus.searchWorkers": {
+          "type": "number",
+          "default": 0,
+          "description": "Nombre de threads workers pour la recherche/remplacement. 0 = auto (utilise os.availableParallelism()). 1 = mono-thread. Capé au nombre de cœurs disponibles."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile && npm run prepare-media",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "prepare-media": "node ./scripts/copy-highlight.js",
+    "postinstall": "node ./scripts/copy-highlight.js",
+    "gen-huge": "node ./scripts/gen-huge.js",
+    "gen-multi": "node ./scripts/gen-multi.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "highlight.js": "^11.9.0"
+  }
+}

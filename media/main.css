@@ -1,0 +1,329 @@
+:root {
+  --line-height: 18px;
+  --gutter-width: 70px;
+  --bg: var(--vscode-editor-background, #1e1e1e);
+  --fg: var(--vscode-editor-foreground, #d4d4d4);
+  --gutter-fg: var(--vscode-editorLineNumber-foreground, #858585);
+  --gutter-active: var(--vscode-editorLineNumber-activeForeground, #c6c6c6);
+  --accent: var(--vscode-focusBorder, #007acc);
+  --hit-bg: rgba(234, 92, 0, 0.33);
+  --current-hit-bg: rgba(255, 150, 50, 0.6);
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--vscode-editor-font-family, Menlo, Consolas, monospace);
+  font-size: var(--vscode-editor-font-size, 13px);
+  overflow: hidden;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+#toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 8px;
+  background: var(--vscode-editorWidget-background, #252526);
+  border-bottom: 1px solid var(--vscode-editorWidget-border, #3c3c3c);
+  font-size: 12px;
+}
+
+#toolbar #status { flex: 1; }
+#toolbar #dirty { color: var(--accent); font-weight: 600; }
+#toolbar #saveIndicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  background: var(--vscode-statusBarItem-prominentBackground, rgba(0, 122, 204, 0.2));
+  color: var(--vscode-statusBarItem-prominentForeground, #fff);
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+}
+#toolbar #saveIndicator.hidden { display: none; }
+#toolbar .spinner {
+  width: 10px;
+  height: 10px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  display: inline-block;
+  animation: mxs-spin 0.7s linear infinite;
+}
+@keyframes mxs-spin {
+  to { transform: rotate(360deg); }
+}
+#toolbar button {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border: none;
+  padding: 2px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+#toolbar button:hover { background: var(--vscode-button-hoverBackground); }
+
+#progressBar {
+  position: relative;
+  height: 22px;
+  background: var(--vscode-editorWidget-background, #252526);
+  border-bottom: 1px solid var(--vscode-editorWidget-border, #3c3c3c);
+  overflow: hidden;
+  flex: 0 0 auto;
+  transition: opacity 0.3s ease;
+}
+#progressBar.hidden { display: none; }
+#progressFill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  transition: width 0.15s ease-out;
+}
+#progressLabel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+  pointer-events: none;
+  text-shadow: 0 0 2px var(--bg);
+}
+#progressBar.indeterminate #progressFill {
+  width: 30%;
+  animation: mxs-indeterminate 1.2s ease-in-out infinite;
+}
+@keyframes mxs-indeterminate {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+
+#searchBar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--vscode-editorWidget-background, #252526);
+  border-bottom: 1px solid var(--vscode-editorWidget-border, #3c3c3c);
+  font-size: 12px;
+}
+#searchBar.hidden { display: none; }
+
+#gotoBar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--vscode-editorWidget-background, #252526);
+  border-bottom: 1px solid var(--vscode-editorWidget-border, #3c3c3c);
+  font-size: 12px;
+}
+#gotoBar.hidden { display: none; }
+#gotoBar input {
+  flex: 1;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, transparent);
+  padding: 2px 6px;
+  font-family: inherit;
+}
+#gotoBar #gotoHint {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+  min-width: 80px;
+}
+#gotoBar button {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid transparent;
+  cursor: pointer;
+  padding: 1px 6px;
+}
+#gotoBar button:hover { background: var(--vscode-toolbar-hoverBackground, #333); }
+#searchRow, #replaceRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+#replaceRow.hidden { display: none; }
+#searchBar input[type="text"] {
+  flex: 1;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, transparent);
+  padding: 2px 6px;
+  font-family: inherit;
+}
+#searchBar button {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid transparent;
+  cursor: pointer;
+  padding: 1px 6px;
+}
+#searchBar button:hover { background: var(--vscode-toolbar-hoverBackground, #333); }
+#replaceAllBtn {
+  background: var(--vscode-button-background) !important;
+  color: var(--vscode-button-foreground) !important;
+}
+#replaceAllBtn:hover { background: var(--vscode-button-hoverBackground) !important; }
+#replaceAllBtn:disabled { opacity: 0.5; cursor: default; }
+#replaceProgress { font-variant-numeric: tabular-nums; opacity: 0.85; }
+
+.mxs-mini-bar {
+  position: relative;
+  height: 14px;
+  border-radius: 3px;
+  background: var(--vscode-editorWidget-border, rgba(255,255,255,0.1));
+  overflow: hidden;
+  margin-top: 2px;
+}
+.mxs-mini-bar.hidden { display: none; }
+.mxs-mini-bar .mxs-mini-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  transition: width 0.12s ease-out;
+}
+.mxs-mini-bar .mxs-mini-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+  pointer-events: none;
+  text-shadow: 0 0 2px var(--bg);
+}
+
+#viewport {
+  position: relative;
+  flex: 1;
+  overflow-y: scroll;
+  overflow-x: auto;
+  outline: none;
+}
+
+#spacer {
+  width: 1px;
+  /* height set dynamically = totalLines * lineHeight */
+}
+
+#rendered {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  /* translateY applied dynamically */
+  will-change: transform;
+}
+
+.row {
+  display: flex;
+  height: var(--line-height);
+  line-height: var(--line-height);
+  white-space: pre;
+}
+
+.row:hover { background: var(--vscode-editor-hoverHighlightBackground, rgba(255,255,255,0.04)); }
+.row.current { background: var(--vscode-editor-lineHighlightBackground, rgba(255,255,255,0.07)); }
+
+.gutter {
+  width: var(--gutter-width);
+  text-align: right;
+  padding-right: 12px;
+  color: var(--gutter-fg);
+  user-select: none;
+  flex: 0 0 auto;
+}
+.row.current .gutter { color: var(--gutter-active); }
+
+.content {
+  flex: 1;
+  padding-left: 12px;
+  white-space: pre;
+  outline: none;
+}
+
+.content[contenteditable="true"] {
+  /* No border or special background in edit mode: keep the exact native
+     VS Code rendering (caret focus is enough). */
+}
+
+/* Custom navigation caret + selection overlays. The caret is a thin
+   blinking vertical bar rendered as an absolutely-positioned div over
+   the rendered window. Selection is rendered as one rectangle per
+   visible line (≤ visibleCount divs, O(visible)). Both layers are
+   pointer-events:none so clicks fall through to the underlying rows. */
+.caret {
+  position: absolute;
+  width: 2px;
+  background: var(--vscode-editorCursor-foreground, var(--accent));
+  pointer-events: none;
+  z-index: 5;
+  animation: mxs-caret-blink 1s step-end infinite;
+}
+.caret.hidden { display: none; }
+@keyframes mxs-caret-blink {
+  50% { opacity: 0; }
+}
+.sel-line {
+  position: absolute;
+  /* Match the native browser text-selection color (the same one users
+     saw before the caret model was introduced via window.getSelection()
+     on rendered rows). The system `Highlight` color follows the OS theme. */
+  background: Highlight;
+  opacity: 0.4;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Edit lock during a Replace All: visible info banner and explicit cursor
+   on the viewport. The JS click handler ignores clicks when
+   state.replaceLocked is true; this CSS adds the visual feedback. */
+body.replace-locked #viewport { cursor: progress; }
+body.replace-locked .row { cursor: progress; }
+body.replace-locked .content[contenteditable="true"] { pointer-events: none; }
+body.replace-locked #replaceLockBanner { display: flex; }
+#replaceLockBanner {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  background: var(--vscode-editorWarning-background, rgba(255, 200, 0, 0.15));
+  color: var(--vscode-editorWarning-foreground, var(--fg));
+  border-bottom: 1px solid var(--vscode-editorWarning-border, rgba(255, 200, 0, 0.4));
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+#replaceLockBanner .spinner {
+  width: 10px;
+  height: 10px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  display: inline-block;
+  animation: mxs-spin 0.7s linear infinite;
+}
+
+mark.hit {
+  background: var(--hit-bg);
+  color: inherit;
+  padding: 0;
+}
+mark.hit.current { background: var(--current-hit-bg); }
+
+#searchCount { font-variant-numeric: tabular-nums; min-width: 80px; }
