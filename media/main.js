@@ -464,7 +464,12 @@
     const maxFirstVisible = Math.max(0, state.totalLines - visibleCount);
     if (!anchored && (firstVisible >= maxFirstVisible || isScrollBottom)) {
       firstVisible = maxFirstVisible;
-      atEnd = true;
+      // Only switch to bottom-aligned mode when the file is actually
+      // taller than the viewport. For empty/short files (totalLines <=
+      // visibleCount), there is no scrolling and the first line must
+      // stay anchored to the top of the viewport — like any normal
+      // text editor — instead of being pushed to the bottom.
+      if (state.totalLines > visibleCount) atEnd = true;
     }
     const start = Math.max(0, firstVisible - cfg.bufferLines);
     const end = Math.min(state.totalLines, firstVisible + visibleCount + cfg.bufferLines);

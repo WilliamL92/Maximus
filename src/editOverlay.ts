@@ -191,6 +191,7 @@ export class EditOverlay {
     const tmp = filePath + '.maximus-tmp-' + Date.now() + '-' + crypto.randomBytes(8).toString('hex');
 
     const srcFd = await fs.promises.open(filePath, 'r');
+    let srcClosed = false;
     type Edit = { origStart: number; origEnd: number; replacement: Buffer; multilineReplacement: boolean };
     const edits: Edit[] = [];
     let canPatchIndex =
@@ -306,13 +307,18 @@ export class EditOverlay {
         await dstFd.close();
       }
 
+      // Close the source file before renaming. On Windows, `rename` over
+      // an open file fails with EPERM (POSIX is fine, but we need to be
+      // portable).
+      await srcFd.close();
+      srcClosed = true;
       await fs.promises.rename(tmp, filePath);
       return canPatchIndex ? shifts : null;
     } catch (e) {
       try { await fs.promises.unlink(tmp); } catch { /* */ }
       throw e;
     } finally {
-      await srcFd.close();
+      if (!srcClosed) await srcFd.close();
     }
   }
 }
