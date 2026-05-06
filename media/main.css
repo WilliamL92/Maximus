@@ -24,6 +24,18 @@ html, body {
 body {
   display: flex;
   flex-direction: column;
+  /* Block native text selection across the whole UI shell (toolbar, banners,
+     etc.). Inputs and the search bar re-enable it explicitly below. The
+     viewport already enforces this, but Ctrl+A and shift-click can otherwise
+     create a native selection on toolbar text that overlaps the custom
+     selection overlay rendered inside the viewport. */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+input, textarea {
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 #toolbar {
@@ -215,6 +227,21 @@ body {
   overflow-y: scroll;
   overflow-x: auto;
   outline: none;
+  /* The viewport owns its own selection model (custom caret + .sel-line
+     overlay). Disabling native text selection across the whole viewport
+     prevents the browser from drawing a competing highlight when the
+     user drags the mouse, and also stops Ctrl+A from selecting random
+     adjacent UI text. */
+  user-select: none;
+  -webkit-user-select: none;
+  /* Hide any native browser caret — we draw our own .caret overlay. */
+  caret-color: transparent;
+}
+/* Suppress any native selection highlight that might leak through
+   (belt-and-suspenders alongside user-select:none + selectstart). */
+#viewport ::selection {
+  background: transparent;
+  color: inherit;
 }
 
 #spacer {
@@ -226,7 +253,11 @@ body {
   position: absolute;
   top: 0;
   left: 0;
-  right: 0;
+  /* No `right: 0` so the rendered block can grow horizontally past the
+     viewport when a row is longer than the viewport (real horizontal
+     scroll). `min-width: 100%` keeps the rows the full viewport width
+     so the I-beam shows everywhere, even past the end of short lines. */
+  min-width: 100%;
   /* translateY applied dynamically */
   will-change: transform;
 }
@@ -236,6 +267,15 @@ body {
   height: var(--line-height);
   line-height: var(--line-height);
   white-space: pre;
+  /* Force the row to span the full rendered width even when the line
+     is shorter than the viewport. Without this, `display:flex` shrinks
+     the row to its content and the I-beam disappears past the last
+     character — the very symptom the user reported. */
+  min-width: 100%;
+  /* Show the I-beam over the entire row (gutter excepted), even when
+     the line is shorter than the row's flexed width — same UX as a
+     standard text editor. */
+  cursor: text;
 }
 
 .row:hover { background: var(--vscode-editor-hoverHighlightBackground, rgba(255,255,255,0.04)); }
@@ -248,6 +288,7 @@ body {
   color: var(--gutter-fg);
   user-select: none;
   flex: 0 0 auto;
+  cursor: default;
 }
 .row.current .gutter { color: var(--gutter-active); }
 
@@ -256,12 +297,18 @@ body {
   padding-left: 12px;
   white-space: pre;
   outline: none;
+  /* I-beam over the entire row including the empty area past the line
+     end (flex:1 makes .content fill the row). */
+  cursor: text;
+  /* Disable native text selection: we own selection rendering via the
+     `.sel-line` overlay layer driven by `state.selAnchor`/`state.caret`.
+     Pointer events still fire normally on user-select:none elements,
+     so our custom drag detection is unaffected. */
+  user-select: none;
+  -webkit-user-select: none;
+  caret-color: transparent;
 }
-
-.content[contenteditable="true"] {
-  /* No border or special background in edit mode: keep the exact native
-     VS Code rendering (caret focus is enough). */
-}
+.content * { cursor: inherit; }
 
 /* Custom navigation caret + selection overlays. The caret is a thin
    blinking vertical bar rendered as an absolutely-positioned div over
@@ -296,7 +343,6 @@ body {
    state.replaceLocked is true; this CSS adds the visual feedback. */
 body.replace-locked #viewport { cursor: progress; }
 body.replace-locked .row { cursor: progress; }
-body.replace-locked .content[contenteditable="true"] { pointer-events: none; }
 body.replace-locked #replaceLockBanner { display: flex; }
 #replaceLockBanner {
   display: none;

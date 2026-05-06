@@ -160,7 +160,8 @@ export class MaximusEditorProvider implements vscode.CustomEditorProvider<Maximu
     // renderer or buggy message must never crash the extension host or
     // trigger huge allocations. All checks here are O(1).
     const total = doc.index.totalLines || 0;
-    const isLine = (n: any) => Number.isInteger(n) && n >= 0 && n < Math.max(total + 1, 1 << 30);
+    const virtTotal = doc.overlay.virtualLineCount(total);
+    const isVirtLine = (n: any) => Number.isInteger(n) && n >= 0 && n < Math.max(virtTotal + 1, 1 << 30);
     const isIdx = (n: any) => Number.isInteger(n) && n >= 0;
     const isStr = (s: any, max: number) => typeof s === 'string' && s.length <= max;
     // Cap a single edited line at 8 MiB. Beyond that the surgical-rewrite
@@ -169,34 +170,124 @@ export class MaximusEditorProvider implements vscode.CustomEditorProvider<Maximu
     const MAX_EDIT_LEN = 8 * 1024 * 1024;
     // Cap query/replacement strings; any real search needle is small.
     const MAX_QUERY_LEN = 64 * 1024;
+    // A single editRange replacement (Enter on a huge selection, paste of
+    // a multi-line string) — same cap as a line edit, but applied on the
+    // raw replacement string before splitting.
+    const MAX_REPLACEMENT_LEN = MAX_EDIT_LEN;
     switch (msg.type) {
       case 'requestLines': {
+        // `start`/`end` are VIRTUAL line indices (post-overlay numbering).
+        // We translate them through the overlay to fetch the right slice
+        // of the underlying file, then build the patched / inserted lines.
         const { start, end, requestId } = msg;
         if (!isIdx(start) || !isIdx(end) || end < start || end - start > 1 << 20) return;
         if (!doc.reader) return;
-        const raw = await doc.reader.readLines(start, end);
-        const lines = doc.overlay.applyToRange(start, raw);
+        const lines = await doc.overlay.applyToVirtualRange(
+          start, end, total,
+          (origStart, count) => doc.reader!.readLines(origStart, origStart + count)
+        );
         wv.postMessage({ type: 'lines', requestId, start, lines });
         break;
       }
       case 'edit': {
+        // Single-line edit. `line` is VIRTUAL. Routes to setLine for orig
+        // lines (legacy fast path) or in-place mutation of an inserted
+        // line in the overlay.
         const { line, content } = msg;
-        if (!isLine(line) || !isStr(content, MAX_EDIT_LEN)) return;
-        const prev = await this.peekLine(doc, line);
-        doc.overlay.setLine(line, content);
-        doc.notifyEdit(
-          () => {
-            if (prev === null) doc.overlay.deleteLine(line);
-            else doc.overlay.setLine(line, prev);
-            wv.postMessage({ type: 'invalidate', line });
-          },
-          () => {
-            doc.overlay.setLine(line, content);
-            wv.postMessage({ type: 'invalidate', line });
-          },
-          'Edit line ' + (line + 1)
-        );
+        if (!isVirtLine(line) || !isStr(content, MAX_EDIT_LEN)) return;
+        const pos = doc.overlay.virtualToOrig(line, total);
+        if (!pos) return;
+        if (pos.insertOffset === -1) {
+          // Modifying an orig line: classic patch with undo support.
+          const prev = await this.peekOrigLine(doc, pos.origLine);
+          doc.overlay.setLine(pos.origLine, content);
+          const origLine = pos.origLine;
+          doc.notifyEdit(
+            () => {
+              if (prev === null) doc.overlay.deleteLine(origLine);
+              else doc.overlay.setLine(origLine, prev);
+              wv.postMessage({ type: 'invalidate', line });
+            },
+            () => {
+              doc.overlay.setLine(origLine, content);
+              wv.postMessage({ type: 'invalidate', line });
+            },
+            'Edit line ' + (line + 1)
+          );
+        } else {
+          // Modifying an inserted line in place: no undo metadata path
+          // for now (the line was created in the same overlay session,
+          // user can still revert via reset / discard).
+          const arr = (doc.overlay as any).insertions.get(pos.origLine) as string[] | undefined;
+          if (arr && pos.insertOffset < arr.length) {
+            const prev = arr[pos.insertOffset];
+            arr[pos.insertOffset] = content;
+            const origLine = pos.origLine;
+            const offset = pos.insertOffset;
+            doc.notifyEdit(
+              () => {
+                const a = (doc.overlay as any).insertions.get(origLine) as string[] | undefined;
+                if (a && offset < a.length) a[offset] = prev;
+                wv.postMessage({ type: 'invalidate', line });
+              },
+              () => {
+                const a = (doc.overlay as any).insertions.get(origLine) as string[] | undefined;
+                if (a && offset < a.length) a[offset] = content;
+                wv.postMessage({ type: 'invalidate', line });
+              },
+              'Edit line ' + (line + 1)
+            );
+          }
+        }
         wv.postMessage({ type: 'dirty', dirty: true });
+        break;
+      }
+      case 'editRange': {
+        // Multi-line edit: replaces a virtual range by `replacement` (which
+        // may itself contain newlines). Used for Enter (split), Backspace
+        // at start of line / Delete at end (join), and Backspace / Delete
+        // on a multi-line selection (full replace + line-count change).
+        const { fromLine, fromCol, toLine, toCol, replacement, requestId } = msg;
+        if (!isVirtLine(fromLine) || !isVirtLine(toLine)) return;
+        if (!isIdx(fromCol) || !isIdx(toCol)) return;
+        if (!isStr(replacement, MAX_REPLACEMENT_LEN)) return;
+        if (toLine < fromLine || (toLine === fromLine && toCol < fromCol)) return;
+        // Snapshot the overlay so undo can revert to the exact prior state.
+        // This is heavier than a per-line undo but is still O(edited lines)
+        // and handles the multi-line case correctly.
+        const snapshot = (doc.overlay as any)._snapshot();
+        try {
+          const result = await doc.overlay.replaceVirtualRange(
+            total, fromLine, fromCol, toLine, toCol, replacement,
+            (origLine) => this.readOrigLine(doc, origLine)
+          );
+          const undo = () => {
+            (doc.overlay as any)._restore(snapshot);
+            wv.postMessage({ type: 'editRangeApplied', requestId, undone: true,
+              totalLines: doc.overlay.virtualLineCount(total) });
+          };
+          const after = (doc.overlay as any)._snapshot();
+          const redo = () => {
+            (doc.overlay as any)._restore(after);
+            wv.postMessage({ type: 'editRangeApplied', requestId, undone: false,
+              totalLines: doc.overlay.virtualLineCount(total),
+              caretLine: result.caretLine, caretCol: result.caretCol });
+          };
+          doc.notifyEdit(undo, redo, 'Edit range');
+          wv.postMessage({
+            type: 'editRangeApplied',
+            requestId,
+            undone: false,
+            totalLines: doc.overlay.virtualLineCount(total),
+            caretLine: result.caretLine,
+            caretCol: result.caretCol,
+            fromLine,
+          });
+          wv.postMessage({ type: 'dirty', dirty: true });
+        } catch (e: any) {
+          (doc.overlay as any)._restore(snapshot);
+          wv.postMessage({ type: 'error', message: 'Edit failed: ' + safeErrorMessage(e) });
+        }
         break;
       }
       case 'search': {
@@ -422,12 +513,23 @@ export class MaximusEditorProvider implements vscode.CustomEditorProvider<Maximu
     }
   }
 
-  private async peekLine(doc: MaximusDocument, line: number): Promise<string | null> {
+  /** Reads the orig line content as it would appear AFTER the overlay is
+   *  applied (i.e. patched if a patch exists, raw otherwise). Used to
+   *  capture an undo snapshot before modifying. */
+  private async peekOrigLine(doc: MaximusDocument, origLine: number): Promise<string | null> {
     if (!doc.reader) return null;
-    const raw = await doc.reader.readLines(line, line + 1);
+    const raw = await doc.reader.readLines(origLine, origLine + 1);
     if (raw.length === 0) return null;
-    const applied = doc.overlay.applyToRange(line, raw);
+    const applied = doc.overlay.applyToRange(origLine, raw);
     return applied[0] ?? null;
+  }
+
+  /** Raw orig line content (no overlay), used by replaceVirtualRange when
+   *  it needs the source-of-truth content for an unmodified line. */
+  private async readOrigLine(doc: MaximusDocument, origLine: number): Promise<string> {
+    if (!doc.reader) return '';
+    const raw = await doc.reader.readLines(origLine, origLine + 1);
+    return raw[0] ?? '';
   }
 
   // ---- Save / Backup / Revert ------------------------------------------

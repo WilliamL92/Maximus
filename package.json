@@ -2,7 +2,7 @@
   "name": "maximus",
   "displayName": "Maximus",
   "description": "Open, browse, edit and search files of several hundred GB without saturating RAM or disk.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "icon": "media/icon.png",
   "publisher": "maximus1",
   "repository": {

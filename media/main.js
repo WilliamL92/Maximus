@@ -66,7 +66,8 @@
     /** requestId of the last queryHitNav sent. */
     navReqId: 0,
     searchReqId: 0,
-    currentEditing: null,   // line number being edited
+    // (currentEditing field removed — the editor is always editable via
+    // the custom caret model; no per-row contentEditable mode.)
     // Navigation anchor: when we jump to a specific line (gotoHit, jump-to),
     // we store here the line number to display in the center of the
     // viewport. render() honors this anchoring in priority over the
@@ -129,6 +130,37 @@
     snapEnabled: true,
   };
   const MAX_SPACER_PX = 30_000_000;
+
+  // ---- Native selection suppression ------------------------------------
+  // The editor uses a fully custom caret + selection overlay. Native
+  // browser text selection must be completely suppressed so it doesn't
+  // compete with the custom overlays or steal pointer/keyboard events.
+  function isInInputContext(el) {
+    return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA');
+  }
+  function clearNativeSelection() {
+    try { window.getSelection()?.removeAllRanges(); } catch { /* */ }
+  }
+  // Prevent the browser from ever starting a native text selection in the
+  // viewport. `user-select: none` in CSS handles the visual side, but
+  // `selectstart` prevention is needed to stop the selection API from
+  // creating ranges that interfere with our pointer events and Ctrl+A.
+  document.addEventListener('selectstart', (e) => {
+    if (isInInputContext(e.target)) return;
+    e.preventDefault();
+  });
+  // `selectstart` is NOT fired for Ctrl+A on most browsers — only `select`
+  // and `selectionchange` are. We watch `selectionchange` so any native
+  // selection that slips past `selectstart` (Ctrl+A, programmatic, drag
+  // race) is wiped before it can be drawn on top of our custom overlay.
+  // Skip when the user is interacting with a real input — those need a
+  // real native selection to function (caret position, copy/paste).
+  document.addEventListener('selectionchange', () => {
+    if (isInInputContext(document.activeElement)) return;
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+    sel.removeAllRanges();
+  });
 
   // Tells the extension that the webview is ready to receive messages.
   vscode.postMessage({ type: 'webviewReady' });
@@ -590,7 +622,11 @@
     // keep only [start - KEEP/2, end + KEEP/2]
     const lo = Math.max(0, start - KEEP / 2);
     const hi = end + KEEP / 2;
+    // Always keep the caret line so insertAtCaret/deleteAtCaret never
+    // hits a missing-cache fallback after the user scrolled away.
+    const caretLine = state.caret ? state.caret.line : -1;
     for (const k of state.cache.keys()) {
+      if (k === caretLine) continue;
       if (k < lo || k > hi) state.cache.delete(k);
     }
   }
@@ -614,68 +650,129 @@
   }
 
   // ---- Edition -----------------------------------------------------------
-  function enterEdit(row, line, clickEvent) {
-    if (state.currentEditing !== null) commitEdit();
-    state.currentEditing = line;
-    const content = row.querySelector('.content');
-    // We do NOT rewrite textContent: it would erase the syntax coloring
-    // (HTML produced by highlight.js). contenteditable mode accepts
-    // existing HTML perfectly fine; on commit we re-read via innerText to
-    // get the plain value.
-    content.contentEditable = 'true';
-    content.focus();
+  // Direct keystroke model. The custom caret IS the edit cursor. Every
+  // keystroke (printable, Backspace, Delete) is intercepted at the
+  // document level, applied to `state.cache.get(line)` synchronously,
+  // then mirrored to the extension via a single `edit` postMessage.
+  // No contentEditable, no native focus juggling, no per-row mode flag.
+  // The whole file is "always editable" by virtue of the caret existing.
 
-    // Place the cursor at the click location (not always at the end).
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    let placed = false;
-    if (clickEvent && typeof document.caretPositionFromPoint === 'function') {
-      const pos = document.caretPositionFromPoint(clickEvent.clientX, clickEvent.clientY);
-      if (pos && content.contains(pos.offsetNode)) {
-        const r = document.createRange();
-        r.setStart(pos.offsetNode, pos.offset);
-        r.collapse(true);
-        sel.addRange(r);
-        placed = true;
+  /** Sends an `editRange` to the extension. Used for any change that may
+   *  alter the line count (Enter, multi-line delete, line join, paste of
+   *  text containing \n). The extension answers with `editRangeApplied`
+   *  which sets the new totalLines and the post-edit caret position.
+   *  We optimistically also update the local cache so the webview shows
+   *  the change before the round-trip lands. */
+  function postEditRange(fromLine, fromCol, toLine, toCol, replacement) {
+    if (!state.indexReady || state.replaceLocked) return false;
+    // Optimistic local apply: rebuild the affected lines so the user sees
+    // the change immediately. The extension is the source of truth — its
+    // response refreshes the cache and the caret with authoritative data.
+    const fromText = state.cache.get(fromLine);
+    const toText = (fromLine === toLine) ? fromText : state.cache.get(toLine);
+    if (fromText !== undefined && toText !== undefined) {
+      const before = fromText.slice(0, Math.min(fromCol, fromText.length));
+      const after = toText.slice(Math.min(toCol, toText.length));
+      const newLines = (before + replacement + after).split('\n');
+      // Wipe the entire affected span from the cache; the next render
+      // will re-fetch the visible window from the extension.
+      const oldSpan = toLine - fromLine + 1;
+      const delta = newLines.length - oldSpan;
+      // Shift cached lines AFTER the affected span by `delta`.
+      if (delta !== 0) {
+        // Walk in the right order to avoid clobbering: shift down (delta<0)
+        // means moving line k -> k+delta (k decreasing => start from low).
+        // Shift up (delta>0) means moving k -> k+delta (start from high).
+        const entries = Array.from(state.cache.entries());
+        const newCache = new Map();
+        for (const [k, v] of entries) {
+          if (k <= fromLine) newCache.set(k, v);
+          else if (k > toLine) newCache.set(k + delta, v);
+          // lines in (fromLine, toLine] are dropped — they'll be filled by newLines below.
+        }
+        state.cache = newCache;
       }
-    } else if (clickEvent && typeof document.caretRangeFromPoint === 'function') {
-      // WebKit/Chromium : caretRangeFromPoint
-      const r = document.caretRangeFromPoint(clickEvent.clientX, clickEvent.clientY);
-      if (r && content.contains(r.startContainer)) {
-        r.collapse(true);
-        sel.addRange(r);
-        placed = true;
+      // Apply the new lines into the cache.
+      for (let i = 0; i < newLines.length; i++) {
+        state.cache.set(fromLine + i, newLines[i]);
       }
+      state.totalLines += delta;
+      // Invalidate hit cache: line indices have shifted.
+      if (delta !== 0) {
+        state.hitsByLine.clear();
+        state.cachedFrom = -1;
+        state.cachedTo = -1;
+      }
+      recomputeVirtualGeometry();
+      // Place the caret at the end of the replacement.
+      const lastIdx = newLines.length - 1;
+      const caretCol = newLines[lastIdx].length - after.length;
+      setCaret({ line: fromLine + lastIdx, col: caretCol }, false, false, false);
     }
-    if (!placed) {
-      // Fallback: end of line
-      const r = document.createRange();
-      r.selectNodeContents(content);
-      r.collapse(false);
-      sel.addRange(r);
-    }
-
-    content.addEventListener('blur', commitEdit, { once: true });
-    content.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') { content.blur(); }
-      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); content.blur(); }
+    setDirty(true);
+    vscode.postMessage({
+      type: 'editRange',
+      fromLine, fromCol, toLine, toCol, replacement,
+      requestId: state.nextReqId++,
     });
+    return true;
   }
 
-  function commitEdit() {
-    if (state.currentEditing === null) return;
-    const line = state.currentEditing;
-    state.currentEditing = null;
-    const row = rendered.querySelector(`[data-line="${line}"]`);
+  /** Returns the active selection as a normalized {fromLine,fromCol,toLine,toCol},
+   *  or null if there's no caret or the selection is empty. */
+  function normalizedSelection() {
+    if (!state.caret) return null;
+    const a = state.selAnchor;
+    const b = state.caret;
+    if (!a || (a.line === b.line && a.col === b.col)) return null;
+    if (a.line < b.line || (a.line === b.line && a.col < b.col)) {
+      return { fromLine: a.line, fromCol: a.col, toLine: b.line, toCol: b.col };
+    }
+    return { fromLine: b.line, fromCol: b.col, toLine: a.line, toCol: a.col };
+  }
+
+  /** Inserts `text` at the caret position. If `text` contains \n, the line
+   *  count grows. Replaces the active selection first. */
+  function insertAtCaret(text) {
+    if (!state.indexReady || state.replaceLocked || !state.caret) return false;
+    const sel = normalizedSelection();
+    if (sel || text.indexOf('\n') !== -1) {
+      // Multi-line path: route through editRange for line-count-aware handling.
+      const from = sel
+        ? { line: sel.fromLine, col: sel.fromCol }
+        : { line: state.caret.line, col: state.caret.col };
+      const to = sel
+        ? { line: sel.toLine, col: sel.toCol }
+        : { line: state.caret.line, col: state.caret.col };
+      return postEditRange(from.line, from.col, to.line, to.col, text);
+    }
+    // Single-line single-char fast path: legacy `edit` message.
+    const { line, col } = state.caret;
+    const cur = state.cache.get(line);
+    if (cur === undefined) {
+      requestRange(line, line + 1);
+      return false;
+    }
+    const newText = cur.slice(0, col) + text + cur.slice(col);
+    state.cache.set(line, newText);
+    vscode.postMessage({ type: 'edit', line, content: newText });
+    setDirty(true);
+    setCaret({ line, col: col + text.length }, false, false, false);
+    return true;
+  }
+
+  /** Re-render the highlighted content of a single visible row, in place,
+   *  without rebuilding the whole virtual window. */
+  function repaintLine(line) {
+    const row = rendered.querySelector('[data-line="' + line + '"]');
     if (!row) return;
     const content = row.querySelector('.content');
-    const newText = content.innerText.replace(/\n/g, '');
-    content.contentEditable = 'false';
-    if (newText !== state.cache.get(line)) {
-      state.cache.set(line, newText);
-      vscode.postMessage({ type: 'edit', line, content: newText });
-      content.innerHTML = highlight(newText);
-    }
+    if (!content) return;
+    const text = state.cache.get(line);
+    if (text === undefined) return;
+    let html = highlight(text);
+    if (state.hitsByLine.has(line)) html = applyHitsToHtml(html, text, line);
+    content.innerHTML = html;
   }
 
   // ---- Search ------------------------------------------------------------
@@ -780,14 +877,11 @@
 
   /**
    * Toggles the editing lock during a Replace All.
-   * - Shows an info banner at the top.
-   * - Exits any current edit (commit) so we don't lose the typing.
-   * - The click handler checks state.replaceLocked before launching enterEdit.
+   * Shows an info banner at the top and blocks editing.
    */
   function setReplaceLock(locked) {
     state.replaceLocked = locked;
     document.body.classList.toggle('replace-locked', locked);
-    if (locked && state.currentEditing !== null) commitEdit();
   }
 
   function runSearch() {
@@ -875,11 +969,11 @@
   }
 
   // ---- Caret + selection -------------------------------------------------
-  // The webview exposes a real text-editor caret (vertical bar + arrow
-  // navigation + selection) on top of the virtualized line view. The
-  // contenteditable per-row remains the actual editing path; the caret
-  // model only handles navigation/selection and triggers an enterEdit on
-  // double-click, F2 or first printable keystroke.
+  // Custom text-editor caret (vertical bar + arrow navigation + selection)
+  // on top of the virtualized line view. Editing is handled entirely by
+  // the custom caret model: every keystroke is intercepted at the document
+  // level and applied to state.cache. No contentEditable, no native
+  // browser editing — the caret IS the editor.
   //
   // Memory: caret = { line, col }, selAnchor = { line, col } | null.
   // Rendering = 1 absolutely-positioned div for the caret + ≤ visibleCount
@@ -992,6 +1086,72 @@
   }
 
   /**
+   * Local-edit helper used by Backspace/Delete. Routes multi-line cases
+   * (selection spanning lines, Backspace at column 0, Delete at end of
+   * line) through `editRange` so the line count actually changes —
+   * matching VS Code's behavior. Single-char single-line deletions still
+   * use the legacy `edit` message (faster, no round-trip needed).
+   *
+   * Returns `true` if the keystroke was consumed (caller should
+   * `preventDefault`), `false` if we have nothing safe to do (no caret,
+   * needed line not in cache, locked).
+   */
+  function deleteAtCaret(direction) {
+    if (state.replaceLocked || !state.indexReady) return false;
+    if (!state.caret) return false;
+
+    const sel = normalizedSelection();
+    if (sel) {
+      // Selection: replace by empty string. Single-line or multi-line,
+      // editRange handles both uniformly.
+      return postEditRange(sel.fromLine, sel.fromCol, sel.toLine, sel.toCol, '');
+    }
+
+    const { line, col } = state.caret;
+    const text = state.cache.get(line);
+    if (text === undefined) {
+      requestRange(line, line + 1);
+      return true; // consume — try again once the line lands
+    }
+
+    if (direction === 'back') {
+      if (col === 0) {
+        // Backspace at start of line: merge with the previous line.
+        if (line === 0) return true; // already at top, no-op
+        const prevText = state.cache.get(line - 1);
+        if (prevText === undefined) {
+          requestRange(line - 1, line);
+          return true;
+        }
+        return postEditRange(line - 1, prevText.length, line, 0, '');
+      }
+      // Single-char back delete on the caret line.
+      const newText = text.slice(0, col - 1) + text.slice(col);
+      state.cache.set(line, newText);
+      vscode.postMessage({ type: 'edit', line, content: newText });
+      setDirty(true);
+      setCaret({ line, col: col - 1 }, false, false, false);
+    } else {
+      if (col >= text.length) {
+        // Delete at end of line: merge with the next line.
+        if (line >= state.totalLines - 1) return true;
+        const nextText = state.cache.get(line + 1);
+        if (nextText === undefined) {
+          requestRange(line + 1, line + 2);
+          return true;
+        }
+        return postEditRange(line, col, line + 1, 0, '');
+      }
+      const newText = text.slice(0, col) + text.slice(col + 1);
+      state.cache.set(line, newText);
+      vscode.postMessage({ type: 'edit', line, content: newText });
+      setDirty(true);
+      scheduleRender();
+    }
+    return true;
+  }
+
+  /**
    * Maps a mouse event to a {line, col} position. Robust against any
    * float drift in `state.lineHeight` accumulating over thousands of
    * scrolled lines: instead of computing `floor(y / lineHeight)`, we ask
@@ -1005,21 +1165,52 @@
    * they're transparent to this lookup.
    */
   function posFromEvent(e) {
-    if (!state.totalLines) return null;
-    const target = document.elementFromPoint(e.clientX, e.clientY);
-    if (!target) return null;
-    const row = target.closest && target.closest('.row');
-    if (!row || row.parentElement !== rendered) return null;
-    const line = parseInt(row.dataset.line, 10);
-    if (Number.isNaN(line)) return null;
-    const content = row.querySelector('.content');
-    if (!content) return { line, col: 0 };
-    const cRect = content.getBoundingClientRect();
-    // .content has padding-left:12, no border. cRect.left is the padding
-    // edge; text starts 12 px in.
-    const innerLeft = cRect.left + 12;
+    if (!state.totalLines || !state.lineHeight) return null;
+    const lh = state.lineHeight;
     const cw = state.charWidth || 8;
-    let col = Math.max(0, Math.round((e.clientX - innerLeft) / cw));
+    const offset = contentLeftOffset();
+
+    // Build a map from on-screen Y range to data-line, using the actual
+    // rendered rows. This works even when the pointer hovers above a
+    // pointer-events:none overlay (.caret / .sel-line) or sits in the
+    // gutter — we don't depend on `elementFromPoint('.row')`.
+    const vRect = viewport.getBoundingClientRect();
+    const rRect = rendered.getBoundingClientRect();
+    let line = -1;
+    if (e.clientY >= rRect.top && e.clientY < rRect.bottom) {
+      // Inside the rendered window: map relative Y to a row.
+      const yInRendered = e.clientY - rRect.top;
+      const idx = Math.floor(yInRendered / lh);
+      const rows = rendered.querySelectorAll('.row');
+      if (idx >= 0 && idx < rows.length) {
+        const dl = parseInt(rows[idx].dataset.line, 10);
+        if (!Number.isNaN(dl)) line = dl;
+      }
+    }
+    if (line < 0) {
+      // Pointer outside the rendered window (drag overshoot above/below):
+      // extrapolate from the first/last visible line.
+      const above = e.clientY < rRect.top;
+      const rows = rendered.querySelectorAll('.row');
+      if (rows.length === 0) return null;
+      const firstLine = parseInt(rows[0].dataset.line, 10);
+      const lastLine = parseInt(rows[rows.length - 1].dataset.line, 10);
+      if (Number.isNaN(firstLine) || Number.isNaN(lastLine)) return null;
+      if (above) {
+        const linesAbove = Math.ceil((rRect.top - e.clientY) / lh);
+        line = Math.max(0, firstLine - linesAbove);
+      } else {
+        const linesBelow = Math.ceil((e.clientY - rRect.bottom) / lh);
+        line = Math.min(state.totalLines - 1, lastLine + linesBelow);
+      }
+    }
+    line = Math.max(0, Math.min(state.totalLines - 1, line));
+
+    // Column from clientX, using the global content offset (gutter +
+    // padding). Robust even when the row in question isn't currently
+    // rendered.
+    const xInViewport = e.clientX - vRect.left;
+    let col = Math.max(0, Math.round((xInViewport - offset) / cw));
     const len = cachedLineLength(line);
     if (len !== null) col = Math.min(col, len);
     return { line, col };
@@ -1200,34 +1391,20 @@
   }, { passive: true });
   window.addEventListener('resize', () => { recomputeVirtualGeometry(); render(); });
 
-  // ---- Mouse: click places caret, drag selects, double-click edits ------
-  viewport.addEventListener('mousedown', (e) => {
-    if (state.replaceLocked) return;
-    if (e.button !== 0) return;
-    // Ignore clicks on the scrollbar (right of viewport content).
-    if (e.clientX > viewport.getBoundingClientRect().right - 16) return;
-    // If we click outside the currently edited row, commit it.
-    if (state.currentEditing !== null) {
-      const row = e.target.closest && e.target.closest('.row');
-      if (!row || parseInt(row.dataset.line, 10) !== state.currentEditing) {
-        commitEdit();
-      } else {
-        return; // click inside edited row: let contenteditable handle it
-      }
-    }
-    const pos = posFromEvent(e);
-    if (!pos) return;
-    setCaret(pos, e.shiftKey, false, false);
-    if (!e.shiftKey) {
-      state.dragSelecting = true;
-      state.dragPointerId = e.pointerId != null ? e.pointerId : 1;
-    }
-    viewport.focus();
-    e.preventDefault();
-  });
-  window.addEventListener('mousemove', (e) => {
+  // ---- Mouse / pointer: click places caret, drag selects, dbl-click edits
+  // We deliberately do NOT use `setPointerCapture`: in the VS Code webview
+  // iframe (especially on Windows), capture drops silently as soon as the
+  // pointer crosses a sub-pixel boundary, freezing the selection on the
+  // initial line — the exact "selection ne se fait que sur une seule
+  // ligne" bug. Instead, we mount the move/up listeners directly on
+  // `window` (capture-phase) so they fire for ANY pointer movement
+  // anywhere in the document, even outside the viewport. The viewport
+  // only owns `pointerdown` to start the drag.
+  function handleDragMove(e) {
     if (!state.dragSelecting) return;
+    if (state.dragPointerId !== -1 && e.pointerId !== state.dragPointerId) return;
     state.lastMouseClientX = e.clientX;
+    clearNativeSelection();
     const r = viewport.getBoundingClientRect();
     if (e.clientY < r.top + 4) {
       startAutoScroll(-1);
@@ -1238,23 +1415,60 @@
       const pos = posFromEvent(e);
       if (pos) setCaret(pos, true, false, false);
     }
-  });
-  window.addEventListener('mouseup', () => {
+  }
+  const endDrag = (e) => {
+    if (!state.dragSelecting) return;
+    if (e && state.dragPointerId !== -1 && e.pointerId !== state.dragPointerId) return;
     state.dragSelecting = false;
+    state.dragPointerId = -1;
     stopAutoScroll();
+    clearNativeSelection();
+  };
+  viewport.addEventListener('pointerdown', (e) => {
+    if (state.replaceLocked) return;
+    if (e.button !== 0) return;
+    if (e.pointerType === 'mouse' && e.buttons !== 1) return;
+    // Ignore clicks on the scrollbar (right of viewport content).
+    if (e.clientX > viewport.getBoundingClientRect().right - 16) return;
+    const pos = posFromEvent(e);
+    if (!pos) return;
+    setCaret(pos, e.shiftKey, false, false);
+    if (!e.shiftKey) {
+      state.dragSelecting = true;
+      state.dragPointerId = e.pointerId;
+    }
+    viewport.focus();
+    clearNativeSelection();
+    e.preventDefault();
   });
+  // Listen at window level only — no setPointerCapture, no viewport-level
+  // duplicates. This keeps the drag alive even when the pointer races
+  // outside the viewport / rendered window (auto-scroll edges).
+  window.addEventListener('pointermove', handleDragMove);
+  window.addEventListener('pointerup', endDrag);
+  window.addEventListener('pointercancel', endDrag);
+  window.addEventListener('blur', () => endDrag(null));
 
-  // Double-click on a row enters edit at the click position.
+  // Double-click: select the word under the cursor.
   rendered.addEventListener('dblclick', (e) => {
     if (state.replaceLocked) return;
-    const row = e.target.closest('.row');
-    if (!row) return;
-    const line = parseInt(row.dataset.line, 10);
-    enterEdit(row, line, e);
+    const pos = posFromEvent(e);
+    if (!pos) return;
+    const text = state.cache.get(pos.line);
+    if (text === undefined) return;
+    // Find word boundaries around the click position.
+    const wordRe = /\w/;
+    let start = pos.col, end = pos.col;
+    while (start > 0 && wordRe.test(text[start - 1])) start--;
+    while (end < text.length && wordRe.test(text[end])) end++;
+    if (start === end) return; // clicked on non-word character
+    state.selAnchor = { line: pos.line, col: start };
+    setCaret({ line: pos.line, col: end }, true, false, false);
+    clearNativeSelection();
+    e.preventDefault();
   });
 
   saveBtn.addEventListener('click', () => {
-    if (state.currentEditing !== null) commitEdit();
     vscode.postMessage({ type: 'save' });
   });
 
@@ -1276,8 +1490,19 @@
       openGoto();
     } else if ((e.ctrlKey || e.metaKey) && e.key === 's') {
       e.preventDefault();
-      if (state.currentEditing !== null) commitEdit();
       vscode.postMessage({ type: 'save' });
+    } else if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
+      // Ctrl+A — Select All. Skip when focus is in a search/replace input.
+      const ae = document.activeElement;
+      if (ae && (ae === searchInput || ae === replaceInput ||
+                 ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) return;
+      if (!state.indexReady || state.totalLines === 0) return;
+      e.preventDefault();
+      const last = state.totalLines - 1;
+      const lastLen = cachedLineLength(last);
+      state.selAnchor = { line: 0, col: 0 };
+      setCaret({ line: last, col: lastLen !== null ? lastLen : 1e9 }, true, false, false);
+      clearNativeSelection();
     } else if (e.key === 'Escape' && !searchBar.classList.contains('hidden')) {
       closeSearch();
     } else if (e.key === 'Escape' && !gotoBar.classList.contains('hidden')) {
@@ -1290,17 +1515,15 @@
   /**
    * Caret/scroll keyboard navigation. Handles Up/Down/Left/Right,
    * PageUp/PageDown, Home/End, with Shift to extend selection and Ctrl
-   * to jump to file boundaries. Skipped when an input/contenteditable
-   * is focused so it never steals focus from the search bar or an
-   * editable row. F2 / printable keystroke / Enter on the caret line
-   * starts editing at the caret position.
+   * to jump to file boundaries. Skipped when an input is focused so
+   * it never steals focus from the search bar. Printable keystrokes
+   * insert at the caret; Backspace/Delete remove at the caret.
    */
   function handleNavKey(e) {
     if (!state.indexReady) return;
     const ae = document.activeElement;
     if (ae) {
       if (ae === searchInput || ae === replaceInput) return;
-      if (ae.isContentEditable) return; // editing in progress, native cursor wins
       const tag = ae.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
     }
@@ -1326,41 +1549,35 @@
       case 'End': {
         const targetLine = ctrl ? state.totalLines - 1 : state.caret.line;
         const len = cachedLineLength(targetLine);
-        // If the line isn't loaded yet, jump to a large col; clampPos
-        // will tighten it once the line arrives via the requestRange
-        // round-trip.
         setCaret({ line: targetLine, col: len !== null ? len : 1e9 }, ext, false, true);
         break;
       }
-      case 'F2': {
-        if (state.caret) {
-          // Ensure the row is rendered and enter edit.
-          const row = rendered.querySelector('[data-line="' + state.caret.line + '"]');
-          if (row) enterEdit(row, state.caret.line, null);
-        }
+      case 'F2':
+        // F2 was a contentEditable hook in the original design; editing
+        // is always on now, leave unhandled so it doesn't insert anything.
+        handled = false;
         break;
-      }
-      case 'Enter': {
-        if (state.caret) {
-          const row = rendered.querySelector('[data-line="' + state.caret.line + '"]');
-          if (row) enterEdit(row, state.caret.line, null);
-        }
+      case 'Enter':
+        // Enter inserts a newline at the caret (replacing the selection
+        // first if any), matching VS Code. Routes through editRange so
+        // the line count actually grows.
+        if (insertAtCaret('\n')) break;
+        handled = false;
         break;
-      }
+      case 'Backspace':
+        if (!deleteAtCaret('back')) handled = false;
+        break;
+      case 'Delete':
+        if (!deleteAtCaret('fwd')) handled = false;
+        break;
+      case 'Tab':
+        if (insertAtCaret('\t')) break;
+        handled = false;
+        break;
       default:
-        // Printable single-character keystroke at caret -> enter edit on
-        // the caret line (do NOT preventDefault, the keypress will land
-        // in the contenteditable on the next tick).
-        if (!ctrl && !e.altKey && e.key.length === 1 && state.caret) {
-          const row = rendered.querySelector('[data-line="' + state.caret.line + '"]');
-          if (row) {
-            enterEdit(row, state.caret.line, null);
-            // Delegate the keystroke: contenteditable now has focus and
-            // will receive the next keydown for the same character if
-            // the user repeats. We don't preventDefault here so the
-            // current event lands inside the editable (single keypress
-            // semantics).
-          }
+        // Printable single-char keystrokes: insert at caret.
+        if (!ctrl && !e.altKey && e.key.length === 1) {
+          if (insertAtCaret(e.key)) break;
         }
         handled = false;
     }
@@ -1439,6 +1656,12 @@
         setTimeout(hideProgress, 600);
         setStatus(`${msg.fileName} — ${(msg.totalBytes / 1024 / 1024).toFixed(1)} MB`);
         state.indexReady = true;
+        // Place the caret at the very start so Backspace/Delete and the
+        // first printable keystroke work without requiring a prior click
+        // (matches every standard text editor on freshly opened files).
+        if (!state.caret && state.totalLines > 0) {
+          state.caret = { line: 0, col: 0 };
+        }
         render();
         // Release operations queued during indexing.
         if (state.pendingSearch) {
@@ -1468,6 +1691,29 @@
         state.inFlight.delete(msg.line);
         render();
         break;
+      case 'editRangeApplied': {
+        // Authoritative reply from the extension after a `editRange`
+        // (Enter, multi-line delete, line join). The webview applied an
+        // optimistic update; we now reconcile with the extension's view:
+        // - Sync totalLines (line count may have changed).
+        // - On undo, drop the cache entirely (the optimistic state is
+        //   stale) and re-fetch.
+        // - On do/redo, only apply the caret if the optimistic apply
+        //   wasn't fired (e.g. cache miss path).
+        if (typeof msg.totalLines === 'number' && msg.totalLines !== state.totalLines) {
+          state.totalLines = msg.totalLines;
+          recomputeVirtualGeometry();
+        }
+        if (msg.undone) {
+          state.cache.clear();
+          state.inFlight.clear();
+          state.hitsByLine.clear();
+          state.cachedFrom = -1;
+          state.cachedTo = -1;
+          render();
+        }
+        break;
+      }
       case 'saved':
         setDirty(false);
         saveIndicator.classList.add('hidden');
