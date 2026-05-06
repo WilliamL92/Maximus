@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as readline from 'readline';
 import * as crypto from 'crypto';
+import { safeRename } from './safeRename';
 
 export interface SearchHit {
   line: number; // 0-indexed
@@ -427,7 +428,7 @@ export async function streamReplaceAll(
     });
 
     if (onProgress) onProgress(totalBytes, totalBytes, replacements);
-    await fs.promises.rename(tmp, filePath);
+    await safeRename(tmp, filePath);
     const newStat = await fs.promises.stat(filePath);
     return { replacements, totalLines: lineNo, totalBytes: newStat.size };
   } catch (e) {

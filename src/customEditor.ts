@@ -9,6 +9,7 @@ import { EditOverlay } from './editOverlay';
 import { streamReplaceAll } from './search';
 import { parallelSearch } from './parallelSearch';
 import { HitStore } from './hitStore';
+import { safeRename } from './safeRename';
 
 class MaximusDocument implements vscode.CustomDocument {
   readonly index: SparseLineIndex;
@@ -661,7 +662,7 @@ export class MaximusEditorProvider implements vscode.CustomEditorProvider<Maximu
         });
         input.on('error', reject);
       });
-      await fs.promises.rename(tmp, destination.fsPath);
+      await safeRename(tmp, destination.fsPath);
     } catch (e) {
       try { await fs.promises.unlink(tmp); } catch { /* */ }
       throw e;

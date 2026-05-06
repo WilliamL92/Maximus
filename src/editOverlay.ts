@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { SparseLineIndex } from './lineIndex';
+import { safeRename } from './safeRename';
 
 const EMPTY = Buffer.alloc(0);
 
@@ -583,7 +584,7 @@ export class EditOverlay {
       // portable).
       await srcFd.close();
       srcClosed = true;
-      await fs.promises.rename(tmp, filePath);
+      await safeRename(tmp, filePath);
       return canPatchIndex ? shifts : null;
     } catch (e) {
       try { await fs.promises.unlink(tmp); } catch { /* */ }

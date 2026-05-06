@@ -9,7 +9,13 @@
       "Bash(npm view *)",
       "Read(//e/Projects/Extensions/Maximus/**)",
       "Bash(npm install *)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(node:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx vsce:*)",
+      "Bash(code:*)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(npx --yes @vscode/vsce package --no-dependencies)"
     ]
   }
 }
